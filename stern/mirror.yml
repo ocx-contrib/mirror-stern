@@ -1,0 +1,283 @@
+# Single-package repository: every key this mirror needs is package-owned, so
+# there is no `mirror-base.yml` and no `extends:` chain. That is deliberate —
+# `extends:` is a SHALLOW merge of top-level keys, and `platforms:` is where it
+# bites (it carries BOTH the runner matrix and the container legs, so a child
+# that restates it to tweak one runner silently drops every `containers:` entry
+# and nothing reds). With one spec there is nothing to merge and the trap does
+# not exist. A second package here would move the genuinely repo-wide keys into
+# a base — a content move, not a rename, changing no generated filename.
+
+name: stern
+
+# Logical index package `stern/stern` at the physical path
+# `ghcr.io/ocx-contrib/stern/stern` — slash segments, never hyphen-flattened.
+# Two segments always. `stern` is the project's own GitHub org and its own
+# brand, so the org IS the namespace; provenance lives in the claim's
+# `upstream` block, not in the namespace. The first path segment must be this
+# repo's own GitHub owner: GITHUB_TOKEN only authorises packages owned by the
+# repository the workflow runs in.
+target:
+  registry: ghcr.io
+  repository: ocx-contrib/stern/stern
+
+source:
+  type: github_release
+  owner: stern
+  repo: stern
+  # stern tags carry a "v" prefix (e.g. "v1.34.0"); the captured version does
+  # not. The `\d+\.\d+\.\d+$` anchor is what keeps any future release-candidate
+  # or snapshot tag out — every tag in the mirrored range is bare three-part
+  # semver.
+  tag_pattern: "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+
+skip_prereleases: true
+cascade: true
+
+# Bare semver versions (`1.34.0`) carry no `+build` segment, so the fleet
+# default applies with no exception. A cascade tag (`latest`, `1`, `1.34`)
+# re-points on every re-publish; without a build segment the new manifest would
+# reuse the bare version tag and orphan the prior digest for registry GC,
+# breaking any `@sha256:` pin in a consumer's ocx.lock.
+build_timestamp: date
+
+verify:
+  github_asset_digest: true
+
+concurrency:
+  # stern is a large single Go binary: ~13 MB per compressed asset around a
+  # ~48 MB uncompressed executable, so bundling is xz-bound rather than
+  # network-bound. Bundle and push concurrency is held low on purpose.
+  max_downloads: 4
+  max_bundles: 2
+  max_pushes: 2
+  rate_limit_ms: 100
+  max_retries: 3
+  compression_threads: 0
+
+# ─── libc gate (Phase 3.5) — the evidence, not the conclusion ───────────────
+#
+# stern is a single static Go binary. That is the claim; below is what was
+# measured, on BOTH declared Linux arches at ALL THREE points of the mirrored
+# range, because a toolchain can change mid-series (and it visibly did here —
+# 1.34.0 gained a Go BuildID the 1.33.x builds do not carry):
+#
+#   $ file x/v1.33.0/linux_amd64/stern
+#   ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked,
+#     BuildID[sha1]=c67f47f1…, stripped
+#   $ file x/v1.33.0/linux_arm64/stern
+#   ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked,
+#     BuildID[sha1]=ce2ce580…, stripped
+#   $ file x/v1.34.0/linux_amd64/stern
+#   ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked,
+#     Go BuildID=XcLjcG09…, BuildID[sha1]=91e588cf…, stripped
+#   $ file x/v1.34.0/linux_arm64/stern
+#   ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked,
+#     Go BuildID=UtGNTwyM…, BuildID[sha1]=db570059…, stripped
+#
+#   readelf -l <each> | grep -c INTERP          → 0   (all six: 3 versions × 2 arches)
+#   readelf -d <each> | grep -c NEEDED          → 0   (all six)
+#   readelf -V <each> | grep -o 'GLIBC_[0-9.]*' → (no output — no versioned
+#                                                  glibc symbol references at all)
+#
+# The "statically linked" verdict is NOT a UPX artifact — a UPX stub leaves no
+# section headers and no `UPX` strings, and both were checked on all six:
+#
+#   strings -a <each> | grep -c '^UPX'                      → 0
+#   readelf -h <each> | grep 'Start of section headers'      → 400 (bytes into file)
+#
+# No PT_INTERP, no DT_NEEDED, no GLIBC symbol versions, real section headers.
+# The artifact requires NOTHING of the host userland, so both Linux keys are
+# BARE — no `+libc.*` suffix. `os.features` states what an artifact REQUIRES OF
+# THE HOST, not how it was built: tagging a static binary `+libc.glibc` would
+# hide it from every musl host it in fact runs on, and `+libc.musl` would hide
+# it from every glibc host. Neither is true here.
+#
+# A bare key claims universality, so it must PROVE it: the container legs below
+# are ubuntu (glibc) + alpine (musl) + fedora (a different glibc vintage) on
+# both arches. THE ALPINE LEG IS THE PROOF — drop it and the universal claim is
+# merely asserted. Confirmed under local docker before the first push: 1.34.0's
+# linux/amd64 binary ran `--version`, the `--stdin` filter, the JSON renderer
+# and both negative controls identically in ubuntu:24.04, alpine:3.20 and
+# fedora:40 as shipped, so NO `containers[].setup` line is needed. stern talks
+# to a Kubernetes apiserver over HTTP and reads kubeconfig itself; unlike the
+# git-shelling tools on this fleet it execs nothing.
+#
+# ─── Scope + resolution (verified on EVERY in-range release) ────────────────
+#
+# The mirrored range is exactly v1.33.0, v1.33.1 and v1.34.0 — three releases
+# (re-listed per tag with
+# `gh api repos/stern/stern/releases/tags/<tag> --jq '.assets[].name'`, not
+# assumed from one sample). Every pattern below was matched against each of
+# those three full asset lists: EXACTLY ONE match, every time, both ways —
+# 18 checks, 18 single matches. A pattern matching ZERO is silently skipped
+# rather than reported as an error, which would yield a green run with a
+# missing platform, so this check is not optional. No in-range release is
+# asset-less, so the 1.33.0 floor needs no lift.
+#
+# Asset names ARE version-suffixed here, and each one agrees with its own tag
+# (`stern_1.33.1_*` only under v1.33.1) — the vivid-class trap, where a release
+# re-ships its predecessor's binaries under a new tag, does not apply. Checked
+# twice over, because the 1.33.0 and 1.33.1 archives have IDENTICAL uncompressed
+# binary sizes for all six platforms (a version-string-only bump keeps the byte
+# count: "1.33.0" and "1.33.1" are the same length):
+#
+#   sha256 of all 18 extracted binaries → 18 DISTINCT digests
+#   $ x/v1.33.0/linux_amd64/stern --version | head -1   →  version: 1.33.0
+#   $ x/v1.33.1/linux_amd64/stern --version | head -1   →  version: 1.33.1
+#   $ x/v1.34.0/linux_amd64/stern --version | head -1   →  version: 1.34.0
+#
+# TWO NAMING TRAPS, both defused by END-ANCHORING on `\.tar\.gz$`:
+#
+#   1. WINDOWS GAINED A `.zip` SIBLING MID-RANGE. v1.33.0 ships only
+#      `stern_1.33.0_windows_amd64.tar.gz`; from v1.33.1 upstream ships BOTH
+#      `stern_1.34.0_windows_amd64.tar.gz` AND `…_windows_amd64.zip`. So a
+#      loosely-anchored pattern double-matches on v1.33.1+ (hard ambiguous
+#      error) while a `.zip`-anchored one matches ZERO on v1.33.0 (silently
+#      skipped — a green run with a missing platform). `.tar.gz` is the only
+#      format present across the ENTIRE range and is what every windows key
+#      below anchors on. NOTE this makes windows a TARBALL platform, not the
+#      usual zip — no per-platform `asset_type` override is needed or wanted.
+#   2. `stern_<V>_linux_arm.tar.gz` sits beside `…_linux_arm64.tar.gz` in every
+#      release, so an unanchored `_linux_arm` fragment would match both. The
+#      trailing `\.tar\.gz$` plus the literal `64` keeps them apart.
+#
+# Upstream also publishes, and this mirror deliberately does not carry:
+#   stern_<V>_linux_arm.tar.gz    — ocx's Architecture enum has no 32-bit arm
+#   stern_<V>_windows_arm.tar.gz  — same; and it exists at v1.33.0 ONLY,
+#                                   removed by v1.33.1 (the reverse of the
+#                                   usual "added later" drift)
+#   stern_<V>_windows_{amd64,arm64}.zip — the mid-range sibling of trap 1
+#   checksums.txt                 — sidecar
+# ocx expresses exactly amd64 and arm64, so 32-bit arm is an upstream asset
+# rather than a declarable platform — nothing to gate, nothing to exclude
+# beyond not naming it.
+assets:
+  linux/amd64:
+    - "^stern_\\d+\\.\\d+\\.\\d+_linux_amd64\\.tar\\.gz$"
+  linux/arm64:
+    - "^stern_\\d+\\.\\d+\\.\\d+_linux_arm64\\.tar\\.gz$"
+  # ── Pass 2 (darwin) ───────────────────────────────────────────────────────
+  # Uncommented in lockstep with the matching `platforms:` keys below. A
+  # declared platform with no resolvable asset does NOT red — it boots a real
+  # macOS/Windows runner and reports SUCCESS having tested nothing — so the
+  # asset regex and its platform key move in the SAME pass.
+  # darwin/amd64:
+  #   - "^stern_\\d+\\.\\d+\\.\\d+_darwin_amd64\\.tar\\.gz$"
+  # darwin/arm64:
+  #   - "^stern_\\d+\\.\\d+\\.\\d+_darwin_arm64\\.tar\\.gz$"
+  # ── Pass 3 (windows) ──────────────────────────────────────────────────────
+  # windows/amd64:
+  #   - "^stern_\\d+\\.\\d+\\.\\d+_windows_amd64\\.tar\\.gz$"
+  # windows/arm64:
+  #   - "^stern_\\d+\\.\\d+\\.\\d+_windows_arm64\\.tar\\.gz$"
+
+# Every archive — on all six platforms, all three versions — is FLAT: `stern`
+# (`stern.exe` on Windows) sits at the archive root beside `LICENSE`, with no
+# wrapper directory and no `bin/`. Verified with `tar tvzf` on all 18:
+#
+#   -rw-r--r-- runner/runner    11357  LICENSE
+#   -rwxr-xr-x runner/runner 47710370  stern
+#
+# So strip_components 0 on every platform — the binary lands at the content
+# root — and one metadata.json (PATH = ${installPath}) serves all six.
+# NOTE the two shapes that both take 0 and mean opposite things: a FLAT archive
+# (this one) keeps the binary at ${installPath}; an archive WITH a top
+# directory keeps that directory, making PATH ${installPath}/<topdir>. The
+# `tar tvzf` transcript above is what distinguishes them. Windows is a `.tar.gz`
+# here like every other platform (see trap 1), so `type: archive` covers all six
+# with no per-platform override.
+asset_type:
+  type: archive
+  strip_components: 0
+
+# FORCED by the flat archive, not chosen. `bin_scan` only inspects an
+# interface-visible `${installPath}/<dir>` PATH entry, and this archive has no
+# subdirectory to point one at, so both `auto` and `verify` fail spec load at
+# exit 65:
+#
+#   bin_scan is enabled but metadata.json declares no interface-visible
+#   ${installPath}/<dir> PATH entry — the verification would inspect no file
+#   and pass green whatever the archive contains.
+#
+# The `binaries` list in metadata.json is therefore hand-maintained, exactly as
+# that error directs. It is short and stable: `stern` (`stern.exe` on Windows)
+# is the only mode-0755 entry in the archive; `LICENSE` is 0644 data. Quoted so
+# no YAML 1.1 reader folds the bare word into boolean `false`.
+bin_scan: "off"
+
+metadata:
+  default: metadata.json
+
+catalog:
+  logo: logo.svg
+
+versions:
+  # Assigned floor for this mirror. Every release from here up resolves both
+  # declared Linux platforms (and, from pass 2/3, both darwin and both windows
+  # platforms) with exactly one asset each.
+  min: "1.33.0"
+  new_per_run: 5
+  poll_interval: "31 */6 * * *"
+
+tests:
+  # `script:` resolves from the REPOSITORY ROOT — unlike `metadata.default` and
+  # `catalog.logo` above, which resolve against this spec's own directory.
+  - name: smoke
+    script: stern/tests/smoke.star
+
+# ─── Runner + container matrix ─────────────────────────────────────────────
+platforms:
+  linux/amd64:
+    runner: ubuntu-latest
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "alpine:3.20",  shell: sh }
+      - { image: "fedora:40",    shell: bash }
+  linux/arm64:
+    # arm64 container legs run natively — no qemu — so the runner arch must
+    # match the platform or the renderer reds the leg up front.
+    runner: ubuntu-24.04-arm
+    containers:
+      - { image: "ubuntu:24.04", shell: bash }
+      - { image: "alpine:3.20",  shell: sh }
+      - { image: "fedora:40",    shell: bash }
+  # ── Pass 2 (darwin) ───────────────────────────────────────────────────────
+  # darwin/amd64:
+  #   # Intel slice tested on the arm64 macos-14 runner via Rosetta 2 —
+  #   # GitHub's native macos-13 Intel pool is exhausted and deadlocks push.
+  #   runner: macos-14
+  #   prefix: ["arch", "-x86_64"]
+  # darwin/arm64:
+  #   runner: macos-14
+  #   shell: bash
+  # ── Pass 3 (windows) ──────────────────────────────────────────────────────
+  # windows/amd64:
+  #   runner: windows-latest
+  #   shell: pwsh
+  # windows/arm64:
+  #   # Native arm64 Windows runner — the amd64 pool cannot execute an ARM64
+  #   # PE, and upstream does ship stern_<V>_windows_arm64.tar.gz on every
+  #   # in-range release, so this leg resolves an asset and must exist here or
+  #   # push reds it as missing_junit.
+  #   runner: windows-11-arm
+  #   shell: pwsh
+  #
+  # No `containers:` on darwin or windows — those runners have no Linux
+  # container engine, and the key is rejected at spec load.
+
+annotations:
+  # From the Phase 1.5 license gate:
+  #   $ gh api repos/stern/stern/license --jq '.license.spdx_id'
+  #   Apache-2.0
+  org.opencontainers.image.licenses: "Apache-2.0"
+
+notify:
+  discord:
+    webhook_secret: OCX_MIRROR_DISCORD_HOOK
+    user_id: "227748867204972545"  # pinged in-message on failures
+
+announce:
+  # Spelled out, not derived from target.repository — the logical name and the
+  # physical path are related by convention only.
+  package: stern/stern
+  fork: ocx-contrib/index
