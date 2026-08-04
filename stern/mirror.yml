@@ -166,10 +166,10 @@ assets:
   darwin/arm64:
     - "^stern_\\d+\\.\\d+\\.\\d+_darwin_arm64\\.tar\\.gz$"
   # ── Pass 3 (windows) ──────────────────────────────────────────────────────
-  # windows/amd64:
-  #   - "^stern_\\d+\\.\\d+\\.\\d+_windows_amd64\\.tar\\.gz$"
-  # windows/arm64:
-  #   - "^stern_\\d+\\.\\d+\\.\\d+_windows_arm64\\.tar\\.gz$"
+  windows/amd64:
+    - "^stern_\\d+\\.\\d+\\.\\d+_windows_amd64\\.tar\\.gz$"
+  windows/arm64:
+    - "^stern_\\d+\\.\\d+\\.\\d+_windows_arm64\\.tar\\.gz$"
 
 # Every archive — on all six platforms, all three versions — is FLAT: `stern`
 # (`stern.exe` on Windows) sits at the archive root beside `LICENSE`, with no
@@ -251,16 +251,16 @@ platforms:
     runner: macos-14
     shell: bash
   # ── Pass 3 (windows) ──────────────────────────────────────────────────────
-  # windows/amd64:
-  #   runner: windows-latest
-  #   shell: pwsh
-  # windows/arm64:
-  #   # Native arm64 Windows runner — the amd64 pool cannot execute an ARM64
-  #   # PE, and upstream does ship stern_<V>_windows_arm64.tar.gz on every
-  #   # in-range release, so this leg resolves an asset and must exist here or
-  #   # push reds it as missing_junit.
-  #   runner: windows-11-arm
-  #   shell: pwsh
+  windows/amd64:
+    runner: windows-latest
+    shell: pwsh
+  windows/arm64:
+    # Native arm64 Windows runner — the amd64 pool cannot execute an ARM64
+    # PE, and upstream does ship stern_<V>_windows_arm64.tar.gz on every
+    # in-range release, so this leg resolves an asset and must exist here or
+    # push reds it as missing_junit.
+    runner: windows-11-arm
+    shell: pwsh
   #
   # No `containers:` on darwin or windows — those runners have no Linux
   # container engine, and the key is rejected at spec load.
