@@ -44,17 +44,6 @@ tail: 50
 timestamps: short
 ```
 
-## Install with ocx
-
-```sh
-ocx install ocx.sh/stern/stern
-```
-
-```sh
-# or pin a specific version
-ocx install ocx.sh/stern/stern:1.34.0
-```
-
 ## Links
 
 - [stern on GitHub](https://github.com/stern/stern)
